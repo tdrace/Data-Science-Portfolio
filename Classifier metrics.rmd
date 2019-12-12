@@ -1,0 +1,90 @@
+---
+title: "Assignment 10.2"
+author: "Tuck Drace"
+date: "February 21, 2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Classifier metrics
+
+Here, we split our thoraic surgery one year survival rate dataset into test and training partitions, fit it to a general linear model, and calculate a variety of classifier metrics. The following libraries are relevant to our analysis:
+
+```{r warning=FALSE, message=FALSE}
+library(foreign)
+library(dplyr)
+library(mlogit)
+library(car)
+library(caret)
+library(caTools)
+library(ROCR)
+```
+
+## reading and sampling the data
+
+Here, we load our dataset, rename the factors, and split our dataset into test and train paritions. We randomly split 80% of our data into the training dataset, and 20% into testing. We then fit the data to a general linear model using the `Risk1Yr` variable as the one we want to predict relative to all other variables in the dataset. We then build a prediction set out of the general linear model:
+
+```{r}
+SurvivalRates <- read.arff("C:\\Users\\tuckd\\OneDrive\\Documents\\R\\ThoraricSurgery.arff")
+
+names(SurvivalRates) <- c("Diagnosis", "FVC", "FEV1", "Performance", "Pain", "Haemoptysis", "Dyspnoea", "Cough", "Weakness", "Tumor_size", "Diabetes", "MI", "PAD", "Smoking", "Asthma", "Age", "Risk1Yr")
+
+rows <- sample(nrow(SurvivalRates))
+SurvivalRates <- SurvivalRates[rows, ]
+split <- round (nrow(SurvivalRates) * 0.80)
+
+train <- SurvivalRates[1:split, ]
+test <- SurvivalRates[(split +1):nrow(SurvivalRates), ]
+
+model <- glm(Risk1Yr ~ ., family = "binomial", train)
+p <- predict(model, test, type = "response")
+```
+
+## Classifier metrics: plotting the ROC curve and calculating the AUC value
+
+We use the `caret` package to determine our classifier metrics. We are interested in finding out how well the test set from our out general linear model predicts survival or death one year after thoraic surgery, relative to the base model. The ROC curve gives us an idea of the rate at which our test set correctly or incorrectly predicts survival or death. We would expect our ROC curve to project with a slope of +1, completely linearly, if our model predicts 50% of the actual values. If the curve plots above that linear line, then the preditive values are over 50%, and vice versa if the curve plots underneath it. The graph will look different with each iteration of test data from the base dataset because of variance within random sampling.
+
+```{r}
+colAUC(p, test[["Risk1Yr"]], plotROC = TRUE)
+```
+
+We can see that our ROC surve plots above a linear projection and that the area under the curve is X, indicating that our model more accurately predicts survival or death than blind guessing. 
+
+## Classifier metrics: calculating precision, recall, and F1 scores
+
+The precision of a logistic regression model is similar to accuracy of prediction, but it only looks at data predicted to be positive: in our case, whether someone survived one year after surgery. Recall is also similar to accuracy but it is asking what proportion of actual positives were correctly identified. The F1 score is a weighted average of precision and recall; it ranges from a value of 1 to 0, with 1 being perfect precision and recall, and vice versa at 0.
+
+We will use confusion matrices generated from the `caret` package to get an idea of these classifier metrics at different thresholds of probabilities, taken from our ROC graph. We set thresholds of p > 0.1, p > 0.5, and p > 0.9 below:
+
+```{r}
+T_or_F3 <- ifelse(p > 0.1, "T", "F")
+p_class3 <- factor(T_or_F3, levels = levels(test[["Risk1Yr"]]))
+confusionMatrix(p_class3, test[["Risk1Yr"]], mode = "prec_recall")
+```
+
+We see that at threshold p > 0.1, our precision measurement is X, our recall measurement is X, and our F1 score is X. This means X.
+
+```{r}
+T_or_F1 <- ifelse(p > 0.5, "T", "F")
+p_class1 <- factor(T_or_F1, levels = levels(test[["Risk1Yr"]]))
+confusionMatrix(p_class1, test[["Risk1Yr"]], mode = "prec_recall")
+```
+
+We see that at threshold p > 0.5, our precision measurement is X, our recall measurement is X, and our F1 score is X. This means X.
+
+```{r}
+T_or_F2 <- ifelse(p > 0.9, "T", "F")
+p_class2 <- factor(T_or_F2, levels = levels(test[["Risk1Yr"]]))
+confusionMatrix(p_class2, test[["Risk1Yr"]], mode = "prec_recall")
+```
+
+We see that at threshold p > 0.9, our precision measurement is X, our recall measurement is X, and our F1 score is X. This means X.
+
+## Accuracy versus area under curve (AUC)
+
+In the case of a model in which we observe an accuracy measurement of 96% but an AUC of 53%, my understanding is that accuracy and the AUC are measuring different things. Accuracy is a simple fraction of the number of correct predictions divided by the total number of predictions. The AUC, however, measures the probability that a model ranks a random positive event more highly than a random negative event. So, while a model that demonstrates an accuracy measurement of 96% has a high rate of discriminating whether an event is positive or negative in aggregate, an AUC of 53% in the same model demonstrates that when we look at individual random events, the model is essentially no better than random chance. Whether this is good or bad depends on what we're optimizing the model to do. If we were building an email spam detection algorithm, then we would want our model to positively identify only a minority of our email as spam, otherwise the model would have a high likelihood of filtering out important messages. In which case, an AUC of 53% would be disadvantageous.
+
+

@@ -1,0 +1,331 @@
+---
+title: "Final Project, DSC 520"
+author: "Tuck Drace"
+date: "March 2nd, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Examining Data on Environmental Complaints in Chicago, Years 2012 - 2018
+
+In this project, I've examined data on environmental complaints recorded between 2012 and 2018 from the Chicago Department of Public Health. We are interested in exploring the relationships between geographic regions, inspector IDs, the dates the complaints took place, and the types of complaints registered. A tremendous debt is owed to previous spatial data work done on crime in Chicago completed by Kyle Glide, from which I learned how to construct seasonal plots and frequency tables and which can be accessed here: https://rpubs.com/kylegilde/FinalProjectVisualizingCrimeinChicago. Other learning resources came from Data Camp, Youtube, and Stack Exchange/Overflow; in general, a huge debt owed to the open-source community that have willingly shared their expertise, their code, and their approaches to problems, without which I would be lost. 
+
+We need the following packages for our purposes here:
+
+```{r warning = FALSE, message = FALSE}
+library(lubridate)
+library(ggplot2)
+library(ggmap)
+library(dplyr)
+library(tidyverse)
+library(plotly)
+library(forecast)
+```
+
+## Data Cleaning
+
+We load our data and take a glimpse:
+
+```{r}
+
+cdph_data_orig <- read.csv("C:\\Users\\tuckd\\OneDrive\\Documents\\R\\cdph-environmental-information\\cdph-environmental-complaints.csv", header = TRUE)
+
+glimpse(cdph_data_orig)
+```
+
+We have some cleaning to do. We extract the relevant variables and rename them:
+
+```{r}
+cdph_data <- data.frame(cdph_data_orig$COMPLAINT.DATE, cdph_data_orig$COMPLAINT.TYPE, cdph_data_orig$MAPPED.LOCATION, cdph_data_orig$INSPECTOR, cdph_data_orig$COMPLAINT.DETAIL)
+
+names(cdph_data) <- c("Date_of_Complaint", "Type_of_Complaint", "Location", "Inspector_ID", "Complaint_Detail")
+```
+
+We need to build a string detection algoroithm that removes the map coordinates of the complaints as well as the dates on which the complaints took place. We do so and store the results in a separate data frame:
+
+```{r}
+lon <- "(-([8][0-9]))[.]([0-9]{6})"
+lat <- "(([4][0-9]))[.]([0-9]{6})"
+date <- "(([0-9]{4}))[-]([0-9]{2})[-]([0-9]{2})"
+
+locations_and_date <- data.frame(str_extract(cdph_data$Date_of_Complaint, date), str_extract(cdph_data$Location, lon), str_extract(cdph_data$Location, lat))
+
+names(locations_and_date) <- c("Date_of_Complaint", "Longitude", "Latitude")
+```
+
+Now we paste our locations and dates into a data frame with our other variables,  omit any NA values, and verify via `summarise_all()` that we have done so:
+
+```{r warning = FALSE}
+cdph_data1 <- data.frame(locations_and_date$Date_of_Complaint, cdph_data$Type_of_Complaint, locations_and_date$Longitude, locations_and_date$Latitude, cdph_data$Inspector_ID, cdph_data$Complaint_Detail)
+
+names(cdph_data1) <- c("Date_of_Complaint", "Type_of_Complaint", "Longitude", "Latitude", "Inspector_ID", "Complaint_Detail")
+
+cdph_data2 <- na.omit(cdph_data1)
+
+cdph_data2 %>%
+  summarise_all(funs(sum(is.na(.))))
+```
+
+A glimpse at our new data:
+
+```{r}
+glimpse(cdph_data2)
+```
+
+We transform the observations of our dates to make sure they are stored as date objects, and then filter for years 2012 through 2018:
+
+```{r}
+cdph_data2$Date_of_Complaint <- as.Date(cdph_data2$Date_of_Complaint)
+
+cdph_2012to2018 <- cdph_data2 %>% 
+  filter(Date_of_Complaint >= '2012-01-01' & Date_of_Complaint <= '2018-12-31')
+```
+
+We have a problem of our `Type_of_Complaint` variable having observations in all-uppercase, and having observations in title format. We address this by transforming every entry in `Type_of_Complaint` to uppercase:
+
+```{r}
+cdph_2012to2018$Type_of_Complaint <- toupper(cdph_2012to2018$Type_of_Complaint)
+```
+
+We need to also transform our `Latitude` and `Longitude` values from factors to numerics, and our `Type_of_Complaint` variable to factors. We also convert `Complaint_Detail` to character:
+
+```{r}
+cdph_2012to2018$Latitude <- as.numeric(as.character(cdph_2012to2018$Latitude))
+
+cdph_2012to2018$Longitude <- as.numeric(as.character(cdph_2012to2018$Longitude))
+
+cdph_2012to2018$Type_of_Complaint <- as.factor(cdph_2012to2018$Type_of_Complaint)
+
+cdph_2012to2018$Longitude <- as.numeric(as.character(cdph_2012to2018$Longitude))
+
+cdph_2012to2018$Complaint_Detail <- as.character(cdph_2012to2018$Complaint_Detail)
+```
+
+We want to split our `Date_of_Complaint` variable into three separate columns for year, month, and day. We do so using `separate()` and storing the resulting vectors as factors:
+
+```{r}
+cdph_2012to2018 = separate(cdph_2012to2018, Date_of_Complaint, c("Year", "Month", "Day"), sep = "-")
+
+cdph_2012to2018$Year <- as.factor(cdph_2012to2018$Year)
+cdph_2012to2018$Month <- as.factor(cdph_2012to2018$Month) 
+cdph_2012to2018$Day <- as.factor(cdph_2012to2018$Day)
+```
+
+We check to see if these transformations were successful:
+
+```{r}
+glimpse(cdph_2012to2018)
+```
+
+## Frequency Charts and Seasonal Plots
+
+First, we construct a frequency table of the relevant values:
+
+```{r warning = FALSE}
+cat_value_freq <-  
+  cdph_2012to2018 %>% 
+  select_if(is.factor) %>% 
+  select_if(function(x) !is.ordered(x)) %>% 
+  gather("var", "value") %>% 
+  group_by(var) %>% 
+  count(var, value) %>%
+  mutate(prop = prop.table(n)) %>% 
+  filter(prop > .02)
+
+cat_plot1 <-
+  ggplot(data = cat_value_freq,
+         aes(x = reorder(stringr::str_wrap(value, 20), prop),
+             y = prop)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~var, ncol = 3, scales = "free") 
+
+cat_plot1
+```
+
+We see that the 10th of a given month and the 30th of a given month within our six year period were the most likely days in any given month for an environmental complaint to be recorded. The month of August within the six year period had the highest frequency of complaints, and December had the lowest. The year of 2013 had the highest number of environmental complaints, and 2015 had the lowest. Air pollution was reported more than twice as often as the second and third most frequent complaints, complaints for noise and illegal dumping respectively. We can also see that some inspector IDs are associated with far greater frequency of observations than others.
+
+We can also look at year-to-year trends for each complaint type:
+
+```{r}
+total_complaints_6years <-
+  cdph_2012to2018 %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate(Year = as.integer(as.character(Year))) %>% 
+  group_by(Type_of_Complaint, Year) %>% 
+  summarize(complaints = n()) 
+
+trend_plot <- 
+  ggplot(data = total_complaints_6years,
+         aes(x = Year, y = complaints, fill = Type_of_Complaint)) +
+  geom_area() +
+  scale_y_continuous(name = "Complaints", labels = scales::comma)
+
+ggplotly(trend_plot)
+```
+
+Next, we look at the variations through the years of how each type of complaint varied month-to-month.
+
+```{r}
+airpollution_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_airpollution = sum(ifelse(Type_of_Complaint == "AIR POLLUTION WORK ORDER", 1, 0))) 
+
+airpollution_ts <- ts(airpollution_df$Reported_airpollution, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+airpollution_seasonalplot <- 
+  ggseasonplot(airpollution_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of Air Pollution") +
+  ggtitle("Seasonal Plot of Air Pollution Complaints")
+
+ggplotly(airpollution_seasonalplot)
+```
+
+Air pollution complaints spiked in the summer and decreased in the winter; the data appears normally distributed across all six years save for 2015 when air pollution complaints had their highest frequency in October. 
+
+```{r}
+dumping_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_dumping = sum(ifelse(Type_of_Complaint == "ILLEGAL DUMPING WORK ORDER", 1, 0))) 
+
+dumping_ts <- ts(dumping_df$Reported_dumping, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+dumping_seasonalplot <- 
+  ggseasonplot(dumping_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of dumping") +
+  ggtitle("Seasonal Plot of Illegal Dumping Complaints")
+
+ggplotly(dumping_seasonalplot)
+
+
+
+noise_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_noise = sum(ifelse(Type_of_Complaint == "NOISE COMPLAINT", 1, 0))) 
+
+noise_ts <- ts(noise_df$Reported_noise, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+noise_seasonalplot <- 
+  ggseasonplot(noise_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of noise") +
+  ggtitle("Seasonal Plot of Noise Complaints")
+
+ggplotly(noise_seasonalplot)
+```
+
+Summer was also the most frequently observed time for complaints about illegal dumping, as it was for noise complaints; however, for noise complaints, 2014 and 2013 received significantly more noise complaints overall than the other four years within the six year period. 
+
+```{r}
+asbestos_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_asbestos = sum(ifelse(Type_of_Complaint == "ASBESTOS WORK ORDER", 1, 0))) 
+
+asbestos_ts <- ts(asbestos_df$Reported_asbestos, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+asbestos_seasonalplot <- 
+  ggseasonplot(asbestos_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of Asbestos") +
+  ggtitle("Seasonal Plot of Asbestos Complaints")
+
+ggplotly(asbestos_seasonalplot)
+```
+
+Asbestos complaints tended to spike in the early Spring and decline through the rest of the year. 
+
+```{r}
+construction_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_construction = sum(ifelse(Type_of_Complaint == "CONSTRUCTION AND DEMOLITION", 1, 0))) 
+
+construction_ts <- ts(construction_df$Reported_construction, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+construction_seasonalplot <- 
+  ggseasonplot(construction_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of Construction") +
+  ggtitle("Seasonal Plot of Construction and Demolition Complaints")
+
+ggplotly(construction_seasonalplot)
+```
+
+Complaints about construction or demolition tended to be relatively even throughout the year , though there were clear spikes in March, June, August, and October in the six year period. 
+
+```{r}
+toxicmaterial_df <-
+  cdph_2012to2018 %>% 
+  dplyr::group_by(Year, Month) %>%
+  arrange(Year, Month) %>% 
+  summarise(Reported_toxicmaterial = sum(ifelse(Type_of_Complaint == "TOXICS HAZARDOUS MATERIALS WORK ORDER", 1, 0))) 
+
+toxicmaterial_ts <- ts(toxicmaterial_df$Reported_toxicmaterial, start=c(2012, 1), end=c(2018, 12), frequency=12)    
+
+toxicmaterial_seasonalplot <- 
+  ggseasonplot(toxicmaterial_ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Complaints of Toxic or Hazardous Materials") +
+  ggtitle("Seasonal Plot of Toxic or Hazardous Materials Complaints")
+
+ggplotly(toxicmaterial_seasonalplot)
+```
+
+Complaints about toxic materials seemed to be relatively even throughout each of the six years.
+
+## Mapping Coordinates
+
+```{r echo = FALSE}
+register_google(key = "AIzaSyC7CmkZGn_59aqqjVmCtvabHQLQEd1_vZk")
+```
+
+We now look at the mapped data of each complaint that took place between 2012 and 2018. We first generate a base map:
+
+```{r message = FALSE}
+chicago <- c(lon = -87.654184, lat = 41.841664)
+
+map_chicago <- get_map(location = chicago, zoom = 11, scale = 2)
+```
+
+Our first map consists of all observations between the years of 2012 and 2018:
+
+```{r warning = FALSE}
+ggmap(map_chicago, base_layer = ggplot(cdph_2012to2018, aes(Longitude, Latitude))) +
+  geom_point(alpha = 0.25, shape = "circle small")
+```
+
+While complaints definitely take place in all parts of the city, most of them are on the city's wealthy northside, particularly along the shoreline.  
+
+Our second map is a facet wrap of the coordinates for each of the six years, all of which demonstrate the same pattern of most environmental complaints taking place on the northside. 
+
+```{r warning = FALSE}
+ggmap(map_chicago, base_layer = ggplot(cdph_2012to2018, aes(Longitude, Latitude))) +
+  geom_point(alpha = 0.25, shape = "circle small") +
+  facet_wrap(~ Year)
+```
+
+We next code for color based on inspector ID for all six years on a single graph, which demonstrates that on the aggregate, certain inspectors probably spent more time investigating complaints on the northern side of the city, while other inspectors probably spent more time on the southside of the city. 
+
+```{r warning = FALSE}
+ggmap(map_chicago, base_layer = ggplot(cdph_2012to2018, aes(Longitude, Latitude, color = Inspector_ID))) +
+  geom_point(alpha = 0.4, shape = "circle small")
+```
+
+Finally, we create a qmplot with a facet wrap of inspector IDs coding year for color, showing where each inspector completed their inspections for each of the six year period. This graph demonstrates that some of the inspector IDs recorded significantly more observations than others, and in different years.  
+
+```{r warning = FALSE, message = FALSE}
+qmplot(Longitude, Latitude, data = cdph_2012to2018, geom = "point", color = Year) +
+  facet_wrap(~ Inspector_ID)
+```
+
+This concludes our current exploration of environmental complaints registered to the Chicago Department of Public Health for the years 2012 through 2018.
